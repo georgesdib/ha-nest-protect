@@ -42,13 +42,15 @@ class NestClient:
     def __init__(
         self,
         session: ClientSession | None = None,
-        refresh_token: str | None = None,
+        issue_token: str | None = None,
+        cookies: str | None = None,
         environment: NestEnvironment = DEFAULT_NEST_ENVIRONMENT,
     ) -> None:
         """Initialize NestClient."""
 
         self.session = session if session else ClientSession()
-        self.refresh_token = refresh_token
+        self.issue_token = issue_token
+        self.cookies = cookies
         self.environment = environment
 
     async def __aenter__(self) -> NestClient:
@@ -64,78 +66,40 @@ class NestClient:
         """__aexit__."""
         await self.session.close()
 
-    @staticmethod
-    def generate_token_url(
-        environment: NestEnvironment = DEFAULT_NEST_ENVIRONMENT,
-    ) -> str:
-        """Generate the URL to get a Nest authentication token."""
-        data = {
-            "access_type": "offline",
-            "response_type": "code",
-            "scope": "openid profile email https://www.googleapis.com/auth/nest-account",
-            "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
-            "client_id": environment.client_id,
-        }
+    async def get_access_token(self) -> GoogleAuthResponse:
+        """Get a Nest access token."""
+        await self.get_access_token_from_cookies(self.issue_token, self.cookies)
 
-        return f"https://accounts.google.com/o/oauth2/auth/oauthchooseaccount?{urllib.parse.urlencode(data)}"
+        return self.auth
 
-    async def get_refresh_token(self, token: str) -> Any:
-        """Get a Nest refresh token from an authorization code."""
-        async with self.session.post(
-            TOKEN_URL,
-            data=FormData(
-                {
-                    "code": token,
-                    "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
-                    "client_id": self.environment.client_id,
-                    "grant_type": "authorization_code",
-                }
-            ),
-            headers={
-                "User-Agent": USER_AGENT,
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-        ) as response:
-            result = await response.json()
-
-            if "error" in result:
-                if result["error"] == "invalid_grant":
-                    raise BadCredentialsException(result["error"])
-
-                raise Exception(result["error"])
-
-            refresh_token = result["refresh_token"]
-            self.refresh_token = refresh_token
-
-            return refresh_token
-
-    async def get_access_token(
-        self, refresh_token: str | None = None
+    async def get_access_token_from_cookies(
+        self, issue_token: str | None = None, cookies: str | None = None
     ) -> GoogleAuthResponse:
-        """Get a Nest refresh token from an authorization code."""
+        """Get a Nest refresh token from an issue token and cookies."""
 
-        if refresh_token:
-            self.refresh_token = refresh_token
+        if issue_token:
+            self.issue_token = issue_token
 
-        if not self.refresh_token:
-            raise Exception("No refresh token")
+        if cookies:
+            self.cookies = cookies
 
-        async with self.session.post(
-            TOKEN_URL,
-            data=FormData(
-                {
-                    "refresh_token": self.refresh_token,
-                    "client_id": self.environment.client_id,
-                    "grant_type": "refresh_token",
-                }
-            ),
+        if not self.issue_token:
+            raise Exception("No issue token")
+
+        if not self.cookies:
+            raise Exception("No cookies")
+
+        async with self.session.get(
+            issue_token,
             headers={
+                "Sec-Fetch-Mode": "cors",
                 "User-Agent": USER_AGENT,
-                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Requested-With": "XmlHttpRequest",
+                "Referer": "https://accounts.google.com/o/oauth2/iframe",
+                "cookie": cookies,
             },
         ) as response:
             result = await response.json()
-
             if "error" in result:
                 if result["error"] == "invalid_grant":
                     raise BadCredentialsException(result["error"])
@@ -177,12 +141,12 @@ class NestClient:
         ) as response:
             try:
                 nest_response = await response.json()
-            except ContentTypeError:
+            except ContentTypeError as exception:
                 nest_response = await response.text()
 
                 raise PynestException(
                     f"{response.status} error while authenticating - {nest_response}. Please create an issue on GitHub."
-                )
+                ) from exception
 
             # Change variable names since Python cannot handle vars that start with a number
             if nest_response.get("2fa_state"):
@@ -193,20 +157,24 @@ class NestClient:
                 nest_response["_2fa_state_changed"] = nest_response.pop(
                     "2fa_state_changed"
                 )
+            if nest_response.get("error"):
+                _LOGGER.error("Authnetication error: %s", nest_response.get("error"))
 
             try:
                 self.nest_session = NestResponse(**nest_response)
-            except Exception:
+            except Exception as exception:
                 nest_response = await response.text()
+                if result.get("error"):
+                    _LOGGER.error("Could not interprete Nest response")
 
                 raise PynestException(
                     f"{response.status} error while authenticating - {nest_response}. Please create an issue on GitHub."
-                )
+                ) from exception
 
             return self.nest_session
 
     async def get_first_data(self, nest_access_token: str, user_id: str) -> Any:
-        """Get a Nest refresh token from an authorization code."""
+        """Get first data."""
         async with self.session.post(
             APP_LAUNCH_URL_FORMAT.format(host=self.environment.host, user_id=user_id),
             json=NEST_REQUEST,

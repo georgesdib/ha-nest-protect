@@ -170,7 +170,7 @@ class TopazBucket(Bucket):
 
 @dataclass
 class GoogleAuthResponse:
-    """TODO."""
+    """Class that reflects a Google Auth response for cookies."""
 
     access_token: str
     expires_in: int
@@ -178,6 +178,8 @@ class GoogleAuthResponse:
     token_type: str
     id_token: str
     expiry_date: datetime.datetime = field(init=False)
+    login_hint: str
+    session_state: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def __post_init__(self):
         """Set the expiry date during post init."""
@@ -198,18 +200,19 @@ class GoogleAuthResponse:
 class NestAuthClaims:
     """TODO."""
 
-    subject: Any
-    expirationTime: str
-    policyId: str
-    structureConstraint: str
+    subject: Any | None = None
+    expirationTime: str | None = None
+    policyId: str | None = None
+    structureConstraint: str | None = None
 
 
 @dataclass
 class NestAuthResponse:
     """TODO."""
 
-    jwt: str
+    jwt: str | None = None
     claims: NestAuthClaims = field(default_factory=NestAuthClaims)
+    error: dict | None = None
 
 
 @dataclass
